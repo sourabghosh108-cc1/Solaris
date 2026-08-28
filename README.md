@@ -90,8 +90,8 @@ Our solution uses a **Two-Stage Detection and Crop Segmentation Pipeline** with 
 ### 2. Install Dependencies
 ```bash
 # Clone repository
-git clone https://github.com/<your-username>/solar-filament-segmentation-2026.git
-cd solar-filament-segmentation-2026
+git clone https://github.com/sourabghosh108-cc1/Solaris/
+cd Solaris
 
 # Install required packages
 pip install -r requirements.txt
