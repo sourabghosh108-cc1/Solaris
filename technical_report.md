@@ -1,9 +1,9 @@
 # A Two-Stage Deep Learning Framework for Automated Solar Filament Segmentation from Synoptic H-Alpha Observations
 
-**Technical Report for the Solar Filament Segmentation Challenge 2026 (MAGFiLO 1.0)**  
+**Research Paper & Technical Report for the Solar Filament Segmentation Challenge 2026 (MAGFiLO 1.0)**  
 *IEEE BigData 2026 BigDataCup / National Solar Observatory (NSO) / NSF*
 
-**Authors:** Sourab Ghosh, et al.  
+**Author:** Sourab Ghosh  
 **Affiliation:** Independent Space AI Research / Competition Team  
 **Kaggle Notebook:** `sfscs` (Version 1) | **Public Leaderboard Score:** `0.3700`
 
@@ -11,7 +11,7 @@
 
 ## Abstract
 
-Accurate automated segmentation of solar filaments from ground-based H-$\alpha$ observations is fundamental for modeling coronal magnetic topology and predicting space weather hazards such as Coronal Mass Ejections (CMEs) and solar flares. However, solar filament morphology exhibits complex, thread-like structures (barbs), high spatial variance, and observational noise across synoptic telescope stations. In this work, we present a two-stage deep learning framework tailored for the MAGFiLO 1.0 benchmark dataset. **Stage 1** deploys an Ultralytics YOLO11m detector for robust candidate localization of filament bounding boxes across full-disk solar images. **Stage 2** applies a deep UNet++ architecture with an EfficientNet-B4 encoder on contextually padded ($20\%$) filament crops resized to $512 \times 512$. To mitigate severe class imbalance and prioritize faint boundary features, we train the segmenter using a composite **BCETverskyLoss** ($\alpha=0.3, \beta=0.7$). A confidence-ranked greedy panoptic painter enforces strictly disjoint, non-overlapping instance masks in compliance with competition requirements. On the validation set, our pipeline achieves a Panoptic Quality ($PQ$) of **$0.4145$** (Detection Quality $DQ = 0.6093$, Segmentation Quality $SQ = 0.6802$, best crop Dice $= 0.8433$), securing a public leaderboard score of **$0.3700$** and surpassing the human annotator agreement benchmark ($\approx 0.36$).
+Accurate automated segmentation of solar filaments from ground-based H-$\alpha$ observations is fundamental for modeling coronal magnetic topology and predicting space weather hazards such as Coronal Mass Ejections (CMEs) and solar flares. However, solar filament morphology exhibits complex, thread-like structures (barbs), high spatial variance, and observational noise across synoptic telescope stations. In this work, we present a two-stage deep learning framework tailored for the MAGFiLO 1.0 benchmark dataset. **Stage 1** deploys an Ultralytics YOLO11m detector for candidate localization of filament bounding boxes across full-disk solar images. **Stage 2** applies a deep UNet++ architecture with an EfficientNet-B4 encoder on contextually padded ($20\%$) filament crops resized to $512 \times 512$. To mitigate severe class imbalance and prioritize faint boundary features, we train the segmenter using a composite **BCETverskyLoss** ($\alpha=0.3, \beta=0.7$). A confidence-ranked greedy panoptic painter enforces strictly disjoint, non-overlapping instance masks in compliance with competition requirements. On the validation set, our pipeline achieves a Panoptic Quality ($PQ$) of **$0.4145$** (Detection Quality $DQ = 0.6093$, Segmentation Quality $SQ = 0.6802$, best crop Dice $= 0.8433$), securing a public leaderboard score of **$0.3700$** and surpassing the human annotator agreement benchmark ($\approx 0.36$).
 
 **Keywords:** Solar Filaments, MAGFiLO 1.0, GONG H-Alpha, Two-Stage Segmentation, YOLO11, UNet++, BCETverskyLoss, Panoptic Quality.
 
@@ -27,121 +27,169 @@ Automated delineation of filaments from ground-based Global Oscillations Network
 3. **Fragmentation and Over-Merging**: Algorithms risk fragmenting contiguous filaments (one-to-many penalty) or merging neighboring distinct filaments (many-to-one penalty).
 4. **Annotator Ambiguity**: Diffuse boundaries cause human inter-annotator agreement to average only $\approx 0.36$.
 
-To tackle these challenges, we develop a decoupled, two-stage deep neural network architecture optimizing the **Panoptic Quality (PQ)** metric.
-
 ---
 
-## 2. Dataset and Problem Formulation
+## 2. System Architecture
 
-The **MAGFiLO 1.0** dataset contains $2048 \times 2048$ single-channel grayscale GONG observations. The training set provides $707$ unique solar images ($600$ train / $107$ validation) with $976$ multi-annotator record sets comprising $8,199$ filament instances. The test set comprises $180$ full-disk observations.
-
-### Evaluation Metric
-Performance is measured via **Panoptic Quality (PQ)**:
-
-$$\text{PQ} = \text{DQ} \times \text{SQ} = \left( \frac{|\text{TP}|}{|\text{TP}| + \frac{1}{2}|\text{FP}| + \frac{1}{2}|\text{FN}|} \right) \times \left( \frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}|} \right)$$
-
-where a predicted mask $p$ and ground truth mask $g$ form a True Positive ($\text{TP}$) if $\text{IoU}(p, g) > 0.5$. Non-overlapping instance disjointness is strictly required ($p_i \cap p_j = \emptyset$).
-
----
-
-## 3. Proposed Methodology
+![Two-Stage Pipeline Architecture](figures/pipeline_architecture.png)
 
 ```
-+-----------------------------------------------------------------------------+
-|                          System Architecture Flow                           |
-+-----------------------------------------------------------------------------+
-|                                                                             |
-|  [ Full Disk Image (2048x2048) ]                                            |
-|         │                                                                   |
-|         ▼                                                                   |
-|  [ Stage 1: YOLO11m Detector ]                                              |
-|         │   • Trained @ 1280x1280, AdamW lr=0.00087, 40 Epochs              |
-|         │   • Inference @ 1024x1024, Candidate Box Extraction (conf >= 0.05)|
-|         ▼                                                                   |
-|  [ Bounding Box Proposals + 20% Contextual Margin ]                         |
-|         │                                                                   |
-|         ▼                                                                   |
-|  [ Stage 2: UNet++ (EfficientNet-B4) @ 512x512 ]                            |
-|         │   • Single-channel grayscale input                                |
-|         │   • BCETverskyLoss (0.5 BCE + 0.5 Tversky with α=0.3, β=0.7)      |
-|         │   • Batch size 8, Cosine LR scheduling, 12 Epochs                 |
-|         ▼                                                                   |
-|  [ Greedy Panoptic Assembly & Disjoint Mask Assignment ]                    |
-|         │   • 2D Threshold Sweep on Validation Subset                       |
-|         │   • Optimal Parameters: conf = 0.35, mask_thr = 0.60              |
-|         │   • Sequential Pixel Claiming by Confidence Score                 |
-|         ▼                                                                   |
-|  [ Non-Overlapping Instance Masks -> COCO RLE (submission.csv) ]            |
-+-----------------------------------------------------------------------------+
+                  ┌──────────────────────────────────────────────┐
+                  │ 2048x2048 Full Grayscale Solar Observations  │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+                                         ▼
+                   ┌───────────────────────────────────────────┐
+                   │ Stage 1: YOLO11m Candidate Detector       │
+                   │ • Trained @ 1280x1280, AdamW lr=0.00087   │
+                   │ • Inference @ 1024x1024 (conf >= 0.05)    │
+                   └─────────────────────┬─────────────────────┘
+                                         │ Bounding Box Proposals
+                                         ▼
+                   ┌───────────────────────────────────────────┐
+                   │ Stage 2: UNet++ (EfficientNet-B4 Backbone)│
+                   │ • 512x512 Contextual Padded Crops (20%)   │
+                   │ • BCETverskyLoss (0.5 BCE + 0.5 Tversky)  │
+                   │ • α=0.3, β=0.7 (penalizes false negatives)│
+                   └─────────────────────┬─────────────────────┘
+                                         │ Sigmoid Probabilities
+                                         ▼
+                   ┌───────────────────────────────────────────┐
+                   │ Panoptic Post-Processing & RLE Assembly   │
+                   │ • Optimal Thresholds: conf=0.35, mask=0.60│
+                   │ • Greedy Sequential Disjoint Painter      │
+                   │ • Non-Overlapping Instance Masks          │
+                   └─────────────────────┬─────────────────────┘
+                                         │
+                                         ▼
+                            submission.csv (COCO RLE)
 ```
-
-### 3.1 Stage 1: Candidate Detection (YOLO11m)
-We train an Ultralytics **YOLO11m** detector on $1280 \times 1280$ images for $40$ epochs with AdamW ($\text{lr}_0 = 8.7 \times 10^{-4}$, batch size $8$). The detector extracts candidate bounding boxes covering filament spines and barbs. At inference, candidate boxes are extracted at $\text{conf}_{\text{min}} = 0.05$ and $\text{max\_det} = 60$.
-
-Validation detector performance:
-- $\text{mAP}_{50}$: **$0.6369$**
-- $\text{mAP}_{50-95}$: **$0.3760$**
-- Precision: **$0.6154$** | Recall: **$0.6346$**
-
-### 3.2 Stage 2: Crop Segmentation (UNet++ with EfficientNet-B4)
-Candidate bounding boxes are expanded with a $20\%$ contextual margin ($\text{PAD\_RATIO} = 0.20$) and resized to $512 \times 512$. 
-
-The model uses a **UNet++** architecture with an ImageNet-pretrained **EfficientNet-B4** encoder adapted for single-channel grayscale images. Augmentations include horizontal/vertical flips, $90^\circ$ rotations, and brightness/contrast adjustments.
-
-### 3.3 Loss Formulation: BCETverskyLoss
-To address severe class imbalance and penalize false negatives on thin filament barbs, we use a composite **BCETverskyLoss**:
-
-$$\mathcal{L}_{\text{total}} = 0.5 \cdot \mathcal{L}_{\text{BCE}} + 0.5 \cdot \mathcal{L}_{\text{Tversky}}$$
-
-$$\mathcal{L}_{\text{Tversky}} = 1 - \frac{\text{TP} + \epsilon}{\text{TP} + \alpha \text{FP} + \beta \text{FN} + \epsilon}$$
-
-with $\alpha = 0.30$ and $\beta = 0.70$ ($\beta > \alpha$).
-
-The segmenter achieves a best validation crop Dice of **$0.8433$** (epoch 10 of 12).
-
-### 3.4 Panoptic Assembly and Inference
-1. Padded crops are processed through UNet++ in batched forward passes to generate sigmoid probability maps.
-2. Probability maps are resized to full-image coordinate space.
-3. **Threshold Optimization**: A grid search over validation images identifies optimal hyperparameters: $\text{conf} = 0.35, \text{mask\_thr} = 0.60$.
-4. **Greedy Disjoint Assignment**: Predictions are sorted by confidence; pixels are claimed by the highest-confidence filament, guaranteeing $M_i \cap M_j = \emptyset$.
-5. Validated binary masks are encoded into compressed COCO RLE format.
 
 ---
 
-## 4. Experimental Results
+## 3. Jupyter Notebook Implementation Code
 
-### 4.1 Quantitative Performance
+### 3.1 Pipeline Configuration
+```python
+class CFG:
+    SEED = 42
 
-| Method | Validation PQ | Validation DQ | Validation SQ | Crop Dice | Public Leaderboard |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| Human Inter-Annotator Agreement | $\approx 0.3600$ | — | — | — | — |
-| **Our Two-Stage Pipeline (V1)** | **0.4145** | **0.6093** | **0.6802** | **0.8433** | **0.3700** |
+    # ---------- Stage 1: Detector ----------
+    DETECTOR      = 'yolo11m.pt'   # 'yolo11s' faster · 'yolo11l/x' requires BATCH=2-4 or will OOM on T4
+    DET_IMGSZ     = 1280
+    DET_BATCH     = 8              # 16 with an 'x' model at 1280 does NOT fit in 16 GB
+    DET_EPOCHS    = 40
+    DET_PATIENCE  = 8
+    DET_LR        = 0.00087
 
-Detailed validation breakdown ($107$ validation photos):
-- True Positives ($\text{TP}$): $815$
-- False Positives ($\text{FP}$): $466$
-- False Negatives ($\text{FN}$): $579$
-- **Detection Quality ($\text{DQ}$):** $0.6093$
-- **Segmentation Quality ($\text{SQ}$):** $0.6802$
-- **Panoptic Quality ($\text{PQ}$):** $0.4145$
-- **Public Leaderboard Score:** **$0.3700$** ($1,152$ predicted instances across $177/180$ test images)
+    # ---------- Stage 2: Crop Segmenter ----------
+    ENCODER     = 'efficientnet-b4'
+    CROP_SIZE   = 512
+    PAD_RATIO   = 0.20
+    BOX_JITTER  = 0.00             # 0 in V1 baseline
+    SEG_EPOCHS  = 12
+    SEG_BATCH   = 8
+    SEG_PATIENCE = 7
+    SEG_LR      = 2e-4
+    TVERSKY_ALPHA, TVERSKY_BETA = 0.3, 0.7
 
-Our solution outperforms the human inter-annotator agreement baseline ($\approx 0.36$), demonstrating the effectiveness of the two-stage detection and crop segmentation pipeline.
+    # ---------- Inference ----------
+    INFER_IMGSZ = 1024             # V1 inference size
+    CONF_MIN    = 0.05             # floor for candidate caching
+    MAX_DET     = 60
+    MIN_AREA    = 0                # 0 = disabled in V1
+    CONF_GRID   = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35]
+    MASK_GRID   = [0.40, 0.50, 0.60]
+    SWEEP_PHOTOS = 40
+
+    VAL_FRACTION = 0.15
+
+RUN_NAME = 'V1_baseline'
+```
+
+### 3.2 Loss Formulation (BCETverskyLoss)
+```python
+class TverskyLoss(nn.Module):
+    # beta > alpha penalizes false negatives more: targets missing barbs/filaments
+    def __init__(self, alpha=CFG.TVERSKY_ALPHA, beta=CFG.TVERSKY_BETA, smooth=1e-6):
+        super().__init__()
+        self.alpha, self.beta, self.smooth = alpha, beta, smooth
+
+    def forward(self, logits, targets):
+        p = torch.sigmoid(logits).view(-1); t = targets.view(-1)
+        tp = (p * t).sum(); fp = (p * (1 - t)).sum(); fn = ((1 - p) * t).sum()
+        return 1 - (tp + self.smooth) / (tp + self.alpha * fp + self.beta * fn + self.smooth)
+
+
+class BCETverskyLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.bce, self.tv = nn.BCEWithLogitsLoss(), TverskyLoss()
+
+    def forward(self, logits, targets):
+        return 0.5 * self.bce(logits, targets) + 0.5 * self.tv(logits, targets)
+```
+
+### 3.3 Greedy Panoptic Painter (Disjoint Instances)
+```python
+def paint_panoptic(cached, shape, conf_t, mask_t, min_area=CFG.MIN_AREA):
+    # In descending confidence order: each pixel goes to the first filament claiming it -> disjoint instances
+    h, w = shape
+    items = sorted([it for it in cached if it['conf'] >= conf_t], key=lambda d: -d['conf'])
+    occupied = np.zeros((h, w), dtype=bool)
+    masks = []
+    for it in items:
+        cx1, cy1, cx2, cy2 = it['box']
+        m = np.zeros((h, w), dtype=bool)
+        m[cy1:cy2, cx1:cx2] = it['probs'].astype('float32') > mask_t
+        m &= ~occupied
+        if m.sum() <= min_area:
+            continue
+        occupied |= m
+        masks.append(m)
+    return masks
+```
+
+---
+
+## 4. Experimental Results and Training Curves
+
+### 4.1 Training Convergence History
+![Training Loss and Dice Progression](figures/loss_curve.png)
+
+The UNet++ segmenter achieved a peak validation crop Dice score of **$0.8433$** at epoch 10/12.
+
+### 4.2 Step-by-Step Qualitative Delineation
+![Qualitative Predictions](figures/qualitative_predictions.png)
+
+### 4.3 Quantitative Metric Comparison
+![Metric Comparison](figures/metric_comparison.png)
+
+| Evaluation Metric | Score / Value |
+| :--- | :---: |
+| **Stage 1 Detector $\text{mAP}_{50}$** | **$0.6369$** |
+| **Stage 1 Detector Precision / Recall** | $0.6154$ / $0.6346$ |
+| **Stage 2 Best Crop Validation Dice** | **$0.8433$** (Epoch 10) |
+| **Detection Quality ($\text{DQ}$)** | **$0.6093$** ($\text{TP}=815, \text{FP}=466, \text{FN}=579$) |
+| **Segmentation Quality ($\text{SQ}$)** | **$0.6802$** |
+| **Full Validation Panoptic Quality ($\text{PQ}$)** | **$0.4145$** |
+| **Public Leaderboard Score** | **$0.3700$** ($1,152$ instances) |
+| **Human Inter-Annotator Agreement Benchmark** | $\approx 0.3600$ |
 
 ---
 
 ## 5. Conclusion
 
-We presented an effective two-stage deep learning pipeline for automated solar filament segmentation on the MAGFiLO 1.0 dataset. By coupling a YOLO11m detector with a UNet++ (EfficientNet-B4) crop segmenter trained under BCETversky loss, combined with greedy panoptic disjoint assignment, our pipeline achieves strong performance surpassing human annotator agreement benchmarks.
+We presented an effective two-stage deep learning pipeline combining a YOLO11m detector with a UNet++ (EfficientNet-B4) segmenter trained under BCETversky loss. By coupling candidate localization with greedy panoptic assembly, our solution strictly enforces disjoint instance masks, achieves a validation PQ of $0.4145$, and scores $0.3700$ on the Kaggle public leaderboard, surpassing human annotator agreement benchmarks.
 
 ---
 
 ## References
 
-1. A. Ahmadzadeh, et al., "A dataset of manually annotated filaments from H-alpha observations," *Nature Scientific Data*, vol. 11, no. 1, p. 1031, 2024.
+1. A. Ahmadzadeh, et al., "A dataset of manually annotated filaments from H-alpha observations," *Nature Scientific Data*, vol. 11, p. 1031, 2024.
 2. A. Ahmadzadeh, D. J. Kempton, Q. Li, and A. A. Pevtsov, "Solar Filament Segmentation Challenge 2026," *Kaggle Competition*, 2026.
 3. A. Kirillov, K. He, R. Girshick, C. Rother, and P. Dollár, "Panoptic Segmentation," in *Proc. CVPR*, 2019, pp. 9404–9413.
-4. Z. Zhou, M. M. R. Siddiquee, N. Tajbakhsh, and J. Liang, "UNet++: Redesigning Skip Connections to Exploit Multiscale Features in Image Segmentation," *IEEE TMI*, vol. 39, no. 6, pp. 1856–1867, 2020.
+4. Z. Zhou, M. M. R. Siddiquee, N. Tajbakhsh, and J. Liang, "UNet++: Redesigning Skip Connections to Exploit Multiscale Features in Image Segmentation," *IEEE TMI*, vol. 39, pp. 1856–1867, 2020.
 5. S. S. M. Salehi, D. Erdogmus, and A. Gholipour, "Tversky Loss Function for Image Segmentation Using 3D Fully Convolutional Deep Networks," in *Proc. MLMI*, 2017, pp. 379–387.
 6. M. Tan and Q. Le, "EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks," in *Proc. ICML*, 2019, pp. 6105–6114.
-7. G. Jocher and J. Qiu, "Ultralytics YOLO11," 2024. [Online]. Available: https://github.com/ultralytics/ultralytics.
+7. G. Jocher and J. Qiu, "Ultralytics YOLO11," 2024.
