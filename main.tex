@@ -1,0 +1,163 @@
+% =============================================================================
+% ACM. ACM trademarks and branding remain the property of ACM.
+% Technical Report for Solar Filament Segmentation Challenge 2026
+% =============================================================================
+
+\documentclass[sigconf]{acmart}
+
+% --- Competition Rights & Conference Metadata ---
+\setcopyright{none}
+\settopmatter{printacmref=false}
+\acmConference[Kaggle Competition]{Filament Segmentation Challenge}{2026}{\href{https://www.kaggle.com/competitions/filament-segmentation-2026}{kaggle.com/competitions/filament-segmentation-2026}}
+\acmBooktitle{Competition Report}
+\acmDOI{}
+\acmISBN{}
+
+% --- Packages ---
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{amsmath}
+
+\begin{document}
+
+\title{A Two-Stage Deep Learning Framework for Automated Solar Filament Segmentation from Synoptic H-$\alpha$ Observations}
+\subtitle{A Solution to the Solar Filament Segmentation Challenge 2026} % DO NOT CHANGE
+
+\author{Sourab Ghosh}
+\affiliation{%
+  \institution{Independent Space AI Research}
+  \city{Kolkata}
+  \country{India}
+}
+\email{sourab.ghosh@example.com}
+
+\begin{abstract}
+    This report describes our solution to the Solar Filament Segmentation Challenge~2026, a Kaggle competition on automatic segmentation of solar filaments in GONG H-$\alpha$ observations. Accurate identification of solar filament morphology is vital for understanding coronal magnetic topologies and predicting space weather events like Coronal Mass Ejections (CMEs). However, high variability in filament morphology, delicate barb structures, and observational noise in ground-based synoptic images create substantial segmentation challenges. In this work, we present a two-stage deep learning framework tailored for the MAGFiLO~1.0 benchmark dataset. Stage~1 employs a high-resolution YOLO11m detector for localization of candidate filament bounding boxes. Stage~2 applies a UNet++ architecture with an EfficientNet-B4 encoder on contextually padded filament crops ($512 \times 512$). To address severe foreground-background class imbalance and penalize false negatives on thin filament boundaries, we train the segmenter with a composite Binary Cross-Entropy and Tversky Loss ($\alpha=0.3, \beta=0.7$). A confidence-ranked greedy panoptic painter enforces strictly disjoint, non-overlapping instance masks in compliance with competition constraints. On the validation set, our pipeline achieves a Panoptic Quality of $0.4145$ (Detection Quality of $0.6093$, Segmentation Quality of $0.6802$, and crop Dice of $0.8433$), securing a public leaderboard score of $0.3700$ and surpassing the human annotator agreement benchmark ($\approx 0.36$).
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+
+Solar filaments (also termed prominences when projected against the solar limb) are dense, cool plasma structures suspended by magnetic flux ropes in the solar corona above photospheric polarity inversion lines~\cite{ahmadzadeh2024dataset}. Destabilization of these structures frequently leads to Coronal Mass Ejections (CMEs) and solar flares, causing severe geomagnetic storms on Earth that jeopardize satellite operations, communications, and power grids.
+
+Automated delineation of solar filaments from synoptic ground-based observations—such as the Global Oscillations Network Group (GONG) H-$\alpha$ ($656.3\text{ nm}$) telescope network—is critical for real-time space weather forecasting. However, automated filament segmentation presents unique domain-specific challenges:
+\begin{enumerate}
+    \item \textbf{Fine-scale Barb Delineation:} Filaments consist of extended central spines and thin, lateral ``barbs'' with faint contrast.
+    \item \textbf{Observational Artifacts:} Ground-based observations from different stations exhibit varying atmospheric turbulence, noise artifacts, and non-uniform solar disk illumination (limb darkening).
+    \item \textbf{Fragmentation and Over-Merging:} Segmenting contiguous physical filaments into fragmented pieces (one-to-many errors) or merging adjacent distinct filaments (many-to-one errors) severely penalizes evaluation.
+    \item \textbf{Multi-Annotator Variance:} Filament boundaries are inherently diffuse, resulting in human inter-annotator agreement of only $\approx 0.36$~\cite{ahmadzadeh2024dataset}.
+\end{enumerate}
+
+To overcome these challenges, we develop a decoupled, two-stage deep neural network architecture optimizing the **Panoptic Quality (PQ)** metric~\cite{kirillov2019panoptic} within standard GPU resource limits.
+
+\section{Problem Formulation and Metric}
+
+The MAGFiLO~1.0 dataset~\cite{ahmadzadeh2024dataset, filament-segmentation-2026} comprises $2048 \times 2048$ single-channel grayscale GONG observations. The training split contains $707$ unique images with $976$ multi-annotator record sets comprising $8,199$ filament instances. The test set comprises $180$ unannotated observations.
+
+The official evaluation criterion is the **Panoptic Quality (PQ)** metric~\cite{kirillov2019panoptic}, mathematically decomposed into **Detection Quality (DQ)** and **Segmentation Quality (SQ)**:
+\begin{equation}
+  \text{PQ} = \text{DQ} \times \text{SQ} = \left( \frac{|\text{TP}|}{|\text{TP}| + \frac{1}{2}|\text{FP}| + \frac{1}{2}|\text{FN}|} \right) \times \left( \frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}|} \right)
+\end{equation}
+where $p$ and $g$ represent predicted and ground-truth instances, respectively. A pair forms a True Positive ($\text{TP}$) if $\text{IoU}(p, g) > 0.5$. Instances must be completely disjoint ($p_i \cap p_j = \emptyset$ for all $i \ne j$).
+
+\section{Proposed Methodology}
+
+Our framework separates global candidate detection from fine-grained local segmentation, followed by panoptic mask assembly.
+
+\subsection{Stage 1: Filament Detector (YOLO11m)}
+
+To detect candidate filament regions across full-disk solar images, we employ the Ultralytics YOLO11m architecture~\cite{jocher2024yolo11}. We format the COCO annotations into normalized bounding box labels $(x_{\text{center}}, y_{\text{center}}, w, h)$ per unique observation.
+
+The detector is trained at an image resolution of $1280 \times 1280$ pixels using the AdamW optimizer ($\text{lr}_0 = 8.7 \times 10^{-4}$, momentum $0.937$, weight decay $5 \times 10^{-4}$) with a batch size of $8$ for $40$ epochs. Warmup epochs ($5$ epochs) and early stopping (patience $=8$) are applied. The detector achieves a validation $\text{mAP}_{50}$ of $0.6369$, $\text{mAP}_{50-95}$ of $0.3760$, precision of $0.6154$, and recall of $0.6346$.
+
+\subsection{Stage 2: Crop Segmenter (UNet++ with EfficientNet-B4)}
+
+Each detected bounding box $(x, y, w, h)$ is expanded with a $20\%$ contextual margin ($\text{PAD\_RATIO} = 0.20$) to ensure boundary threads are fully contained within the field of view:
+\begin{equation}
+  x_1 = \max(0, x - 0.20w), \quad x_2 = \min(W, x + 1.20w)
+\end{equation}
+\begin{equation}
+  y_1 = \max(0, y - 0.20h), \quad y_2 = \min(H, y + 1.20h)
+\end{equation}
+The cropped sub-regions are resized to $512 \times 512$ pixels.
+
+The segmentation model utilizes a UNet++~\cite{zhou2018unetplusplus} architecture featuring nested, dense skip pathways with an ImageNet-pretrained EfficientNet-B4~\cite{tan2019efficientnet} backbone adapted for single-channel grayscale input. Data augmentations include random horizontal flips ($p=0.5$), vertical flips ($p=0.5$), $90^\circ$ rotations ($p=0.5$), and brightness/contrast adjustments ($p=0.5$).
+
+\subsection{Loss Formulation: Composite BCE-Tversky Loss}
+
+Because filament pixels constitute a small fraction of each crop, standard cross-entropy suffers from background dominance. To emphasize recall on thin boundary structures, we employ a composite **BCETverskyLoss**~\cite{salehi2017tversky}:
+\begin{equation}
+  \mathcal{L}_{\text{total}} = 0.5 \cdot \mathcal{L}_{\text{BCE}} + 0.5 \cdot \mathcal{L}_{\text{Tversky}}
+\end{equation}
+where the Tversky loss is defined as:
+\begin{equation}
+  \mathcal{L}_{\text{Tversky}} = 1 - \frac{\text{TP} + \epsilon}{\text{TP} + \alpha \text{FP} + \beta \text{FN} + \epsilon}
+\end{equation}
+We set $\alpha = 0.30$ and $\beta = 0.70$ ($\beta > \alpha$), which places a higher penalty on False Negatives to capture faint filament barbs.
+
+The segmenter is trained with AdamW ($\text{lr} = 2 \times 10^{-4}$, cosine annealing) and mixed-precision (AMP) for $12$ epochs with a batch size of $8$. The best validation crop Dice reaches **$0.8433$** at epoch 10.
+
+\subsection{Inference and Greedy Panoptic Assembly}
+
+During test inference:
+\begin{enumerate}
+    \item Full $2048 \times 2048$ images are passed through the YOLO11m detector ($\text{imgsz} = 1024$, candidate confidence floor $\text{conf}_{\text{min}} = 0.05$, $\text{max\_det} = 60$).
+    \item Padded crops are extracted and processed through UNet++ in batched forward passes to generate sigmoid probability maps.
+    \item The probability maps are resized back to their original bounding box coordinates in the $2048 \times 2048$ image space.
+    \item **Threshold Sweep:** A 2D grid search over validation observations determines the optimal combination of detection confidence ($\text{conf} = 0.35$) and mask binarization threshold ($\text{mask\_thr} = 0.60$).
+    \item **Greedy Disjoint Painter:** Predicted instances are sorted by detection confidence in descending order. Each pixel is claimed by the first claiming filament:
+    \begin{equation}
+      M_k = (P_k > \text{mask\_thr}) \cap \neg \left( \bigcup_{j < k} M_j \right)
+    \end{equation}
+    This strictly guarantees non-overlapping panoptic instances ($M_i \cap M_j = \emptyset$).
+    \item Validated binary masks are encoded into compressed COCO Run-Length Encoding (RLE) format for final submission.
+\end{enumerate}
+
+\section{Experiments and Results}
+
+\subsection{Experimental Setup}
+
+The training dataset ($707$ images) was partitioned into an $85\%$ training set ($600$ images, $976$ annotator records) and a $15\%$ validation set ($107$ images, $178$ annotator records) stratified by unique observation. Experiments were conducted on a single NVIDIA Tesla T4 GPU ($15\text{ GB}$ VRAM) using PyTorch 2.10 and CUDA 12.8.
+
+\subsection{Validation and Test Performance}
+
+Table~\ref{tab:results} provides the quantitative results of our pipeline on the validation split and the official Kaggle test set.
+
+\begin{table}[t]
+  \centering
+  \caption{Evaluation results on the MAGFiLO 1.0 dataset.}
+  \label{tab:results}
+  \begin{tabular}{lccccc}
+    \toprule
+    Metric & DQ & SQ & PQ & Dice & Public LB \\
+    \midrule
+    Human Inter-Annotator~\cite{ahmadzadeh2024dataset} & --- & --- & $\approx 0.3600$ & --- & --- \\
+    \textbf{Our Pipeline (V1)} & \textbf{0.6093} & \textbf{0.6802} & \textbf{0.4145} & \textbf{0.8433} & \textbf{0.3700} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+On the full validation set ($107$ images), our pipeline achieves:
+\begin{itemize}
+    \item $\text{TP} = 815$, $\text{FP} = 466$, $\text{FN} = 579$
+    \item **Detection Quality (DQ):** $0.6093$
+    \item **Segmentation Quality (SQ):** $0.6802$
+    \item **Panoptic Quality (PQ):** $0.4145$
+    \item **Public Leaderboard Score:** $0.3700$ ($1,152$ predicted filaments across $177/180$ test images)
+\end{itemize}
+
+Our model surpasses the human annotator agreement benchmark ($\approx 0.36$), confirming that the two-stage decoupling enables effective delineation of solar filaments.
+
+\section{Conclusion}
+
+In this work, we presented an end-to-end two-stage deep learning framework for automated solar filament segmentation. By combining a YOLO11m candidate detector with a UNet++ (EfficientNet-B4) crop segmenter trained under a composite BCE-Tversky loss, our method effectively addresses foreground-background imbalance and diffuse boundary morphology. The greedy panoptic post-processing guarantees strictly disjoint instance masks, achieving a validation PQ of $0.4145$ and a public leaderboard score of $0.3700$.
+
+\section*{Acknowledgment}
+
+We thank the National Science Foundation (NSF), National Solar Observatory (NSO), and the organizers of the Solar Filament Segmentation Challenge 2026 for providing the MAGFiLO 1.0 dataset and hosting this competition.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{main}
+
+\end{document}

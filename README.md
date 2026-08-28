@@ -7,6 +7,10 @@
 
 Official solution repository for the **Solar Filament Segmentation Challenge 2026**, hosted by the **Earth-Space AI Research (ESAIR) Lab**, sponsored by the **U.S. National Science Foundation (NSF)** and the **National Solar Observatory (NSO)** in conjunction with **IEEE BigData 2026**.
 
+- **Public Leaderboard Score:** `0.3700`
+- **Validation Panoptic Quality (PQ):** `0.4145` (DQ: `0.6093`, SQ: `0.6802`, Best Crop Dice: `0.8433`)
+- **Human Inter-Annotator Agreement Benchmark:** $\approx 0.3600$
+
 ---
 
 ## 📌 Problem Overview & Dataset
@@ -28,26 +32,25 @@ Our solution uses a **Two-Stage Detection and Crop Segmentation Pipeline** with 
                                          │
                                          ▼
                    ┌───────────────────────────────────────────┐
-                   │ Stage 1: YOLO11m Detector (@ 1280x1280)   │
-                   │ • Multi-Annotator Bounding Box Fusion     │
-                   │ • Optimized Candidate Localization        │
+                   │ Stage 1: YOLO11m Candidate Detector       │
+                   │ • Trained @ 1280x1280, AdamW lr=0.00087   │
+                   │ • Inference @ 1024x1024 (conf >= 0.05)    │
                    └─────────────────────┬─────────────────────┘
                                          │ Bounding Box Proposals
                                          ▼
                    ┌───────────────────────────────────────────┐
                    │ Stage 2: UNet++ (EfficientNet-B4 Backbone)│
-                   │ • 512x512 Contextual Padded Crops         │
-                   │ • Box Jitter (0.12) Invariance Training   │
-                   │ • Focal Tversky Loss (α=0.3, β=0.7, γ=1.3)│
+                   │ • 512x512 Contextual Padded Crops (20%)   │
+                   │ • BCETverskyLoss (0.5 BCE + 0.5 Tversky)  │
+                   │ • α=0.3, β=0.7 (penalizes false negatives)│
                    └─────────────────────┬─────────────────────┘
                                          │ Sigmoid Probabilities
                                          ▼
                    ┌───────────────────────────────────────────┐
                    │ Panoptic Post-Processing & RLE Assembly   │
-                   │ • Test-Time Augmentation (H/V Flips)      │
-                   │ • Optimal Confidence & Mask Thresholding  │
-                   │ • Min-Area Filter & Morphological Closing │
-                   │ • Disjoint Non-Overlapping Instance Masks │
+                   │ • Optimal Thresholds: conf=0.35, mask=0.60│
+                   │ • Greedy Sequential Disjoint Painter      │
+                   │ • Non-Overlapping Instance Masks          │
                    └─────────────────────┬─────────────────────┘
                                          │
                                          ▼
@@ -58,11 +61,10 @@ Our solution uses a **Two-Stage Detection and Crop Segmentation Pipeline** with 
 
 ## 🚀 Key Methodological Features
 
-1. **Multi-Annotator Box Consensus**: Merges overlapping annotations across independent human experts via IoU-based NMS ($0.70$ threshold), exposing the detector to the full distribution of valid filaments.
-2. **CLAHE Contrast Normalization**: Enhances subtle chromospheric contrast variations and solar limb darkening effects.
-3. **Box Jitter Invariance**: Injects $\pm 12\%$ random bounding box translation/scaling during segmenter training to ensure robustness against imperfect detector proposals.
-4. **Focal Tversky Loss**: Heavily penalizes false negatives on thin, delicate filament barbs and focuses on hard boundary pixels.
-5. **Panoptic Disjoint Painter**: Claims pixels sequentially in descending order of detector confidence, strictly guaranteeing non-overlapping masks with no fragmentation penalties.
+1. **Two-Stage Decoupled Framework**: Candidate localization via YOLO11m separates the spatial search problem from high-resolution boundary delineation.
+2. **Contextually Padded UNet++**: Bounding boxes are padded with a $20\%$ margin to ensure full capture of thin protruding barbs.
+3. **BCETverskyLoss Formulation**: Weighted Tversky loss ($\alpha=0.3, \beta=0.7$) forces the segmenter to prioritize recall on delicate filament boundary threads.
+4. **Greedy Panoptic Painter**: Claims pixels sequentially in descending order of detector confidence, strictly guaranteeing non-overlapping masks ($M_i \cap M_j = \emptyset$) with no fragmentation penalties.
 
 ---
 
@@ -71,8 +73,10 @@ Our solution uses a **Two-Stage Detection and Crop Segmentation Pipeline** with 
 ```
 ├── sfscs.ipynb           # End-to-end training, validation, & submission pipeline notebook
 ├── requirements.txt      # Python dependencies with pinned minimum versions
-├── README.md             # Solution overview, setup, and reproduction guide
-└── (artifacts/)          # Generated submission.csv, models, and evaluation sweeps
+├── main.tex              # ACM LaTeX technical report source (4 pages)
+├── main.bib              # BibTeX citation database
+├── technical_report.md   # Markdown version of technical report
+└── README.md             # Solution overview, setup, and reproduction guide
 ```
 
 ---
@@ -89,13 +93,6 @@ Our solution uses a **Two-Stage Detection and Crop Segmentation Pipeline** with 
 git clone https://github.com/<your-username>/solar-filament-segmentation-2026.git
 cd solar-filament-segmentation-2026
 
-# Create and activate virtual environment
-python -m venv venv
-# Linux / MacOS:
-source venv/bin/activate
-# Windows:
-venv\Scripts\activate
-
 # Install required packages
 pip install -r requirements.txt
 ```
@@ -105,42 +102,38 @@ pip install -r requirements.txt
 ## 🔄 Reproduction Guide
 
 ### Running on Kaggle (Recommended)
-1. Create a new notebook on Kaggle and attach the dataset:
+1. Attach the official dataset:
    `competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026`
-2. Upload and open [`sfscs.ipynb`](sfscs.ipynb).
+2. Open [`sfscs.ipynb`](sfscs.ipynb) on Kaggle.
 3. Set Accelerator to **GPU T4 x2** or **GPU P100**.
 4. Click **"Run All"** / **"Save & Run All (Commit)"**.
-5. Output files generated in `/kaggle/working/`:
-   - `submission.csv` (Ready for submission)
+5. Generated files in `/kaggle/working/`:
+   - `submission.csv` (1,152 predicted instances, 0 overlaps)
    - `best_seg.pth` (Trained UNet++ weights)
-   - `yolo_runs/` (Trained YOLO11 detector checkpoints)
    - `seg_history.csv` & `threshold_sweep.csv` (Validation logs)
-
-### Running Locally / Custom Server
-Ensure the MAGFiLO dataset is placed under `./MAGFiLO_1.0_Kaggle_2026/`, update `ROOT` path in Cell 2 of [`sfscs.ipynb`](sfscs.ipynb), and execute all notebook cells sequentially.
 
 ---
 
 ## 📊 Evaluation & Metrics Summary
 
-The solution is evaluated using **Panoptic Quality (PQ)**:
-
 $$\text{PQ} = \text{DQ} \times \text{SQ} = \frac{\sum_{(p, g) \in \text{TP}} \text{IoU}(p, g)}{|\text{TP}| + \frac{1}{2}|\text{FP}| + \frac{1}{2}|\text{FN}|}$$
 
-- **Detection Quality (DQ)**: Measures precision & recall of identified filament instances.
-- **Segmentation Quality (SQ)**: Measures mean IoU for matched true positive segmentations.
-- **Human Benchmark**: Average agreement between expert human annotators on MAGFiLO is $\approx 0.36$.
+| Run | Detection mAP50 | Best Crop Dice | Val DQ | Val SQ | Val PQ | Public Score |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Human Inter-Annotator Benchmark | — | — | — | — | $\approx 0.3600$ | — |
+| **V1 Baseline (Our Model)** | **0.6369** | **0.8433** | **0.6093** | **0.6802** | **0.4145** | **0.3700** |
 
 ---
 
 ## 📜 Citations & References
 
-If using this codebase or dataset, please cite the MAGFiLO dataset paper and competition:
-
 ```bibtex
 @article{magfilo2024,
-  title={MAGFiLO: A Ground-Truth Dataset of Manually Annotated Filaments from GONG H-Alpha Observations},
-  journal={Scientific Data},
+  title={A dataset of manually annotated filaments from H-alpha observations},
+  author={Ahmadzadeh, Azim and others},
+  journal={Nature Scientific Data},
+  volume={11},
+  pages={1031},
   year={2024},
   doi={10.1038/s41597-024-03876-y}
 }
@@ -156,4 +149,4 @@ If using this codebase or dataset, please cite the MAGFiLO dataset paper and com
 ---
 
 ## 📄 License
-This repository is licensed under the [Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/) license in compliance with competition data guidelines.
+This repository is licensed under the [Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/) license.
